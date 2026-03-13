@@ -116,4 +116,4 @@ Calculated using the official DONMTC grade point scale:
 ---
 
 **Gradely — A Student Initiative for Academic Clarity**
-Built by Jonas Coleman, SRC PRO | DONMTC
+Built by Jonas Coleman, SRC PRO | DDNMTC

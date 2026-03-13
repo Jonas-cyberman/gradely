@@ -197,6 +197,74 @@
             </p>
             <div id="login-error" class="error-area"></div>
         </form>
+
+        <div id="recovery-form" style="display:none;">
+            <h2 style="font-size:1.4rem; 
+                font-weight:800; 
+                margin-bottom:8px; 
+                letter-spacing:-0.5px;">
+                Set New Password
+            </h2>
+            <p style="color:#94a3b8; 
+                font-size:0.9rem; 
+                margin-bottom:32px;">
+                Choose a strong password for your 
+                Gradely Admin account.
+            </p>
+            
+            <div class="form-group">
+                <label class="label">New Password</label>
+                <div style="position:relative;">
+                    <input type="password" 
+                        id="recovery-password" 
+                        class="input" 
+                        placeholder="Minimum 8 characters"
+                        oninput="checkRecoveryStrength(
+                            this.value)">
+                    <button type="button" 
+                        onclick="toggleRecoveryPass()"
+                        style="position:absolute; 
+                            right:12px; top:50%; 
+                            transform:translateY(-50%); 
+                            background:none; border:none; 
+                            cursor:pointer; font-size:1.2rem;">
+                        👁️
+                    </button>
+                </div>
+                <div id="recovery-strength-bar" 
+                    style="height:4px; width:0; 
+                        background:#f5a623; 
+                        margin-top:8px; 
+                        border-radius:2px; 
+                        transition:0.3s;">
+                </div>
+                <div id="recovery-strength-text"
+                    style="font-size:0.75rem; 
+                        color:#94a3b8; 
+                        margin-top:6px;">
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label class="label">
+                    Confirm New Password
+                </label>
+                <input type="password" 
+                    id="recovery-confirm" 
+                    class="input" 
+                    placeholder="Re-type new password">
+            </div>
+            
+            <button onclick="confirmRecoveryPassword()" 
+                class="btn btn-black" 
+                id="recovery-btn">
+                Update Password
+            </button>
+            
+            <div id="recovery-error" 
+                class="error-area">
+            </div>
+        </div>
     </div>
 
     <script>
@@ -238,6 +306,38 @@
                 .eq('id', userId)
                 .single();
 
+            // Check if there is a pending invite for this user's email
+            const { data: { user: currentUser } } = await db.auth.getUser();
+            const email = currentUser?.email;
+            if (email) {
+                const pendingKey = 'pending_admin_' + email.replace(/[^a-z0-9]/gi, '_');
+                const { data: pendingSetting } = await db
+                    .from('app_settings')
+                    .select('*')
+                    .eq('key', pendingKey)
+                    .single();
+                
+                if (pendingSetting) {
+                    const pending = JSON.parse(pendingSetting.value);
+                    // Auto-create admin record
+                    await db.from('admin_users').insert({
+                        id: userId,
+                        name: pending.name,
+                        role: pending.role,
+                        position: pending.position,
+                        email: pending.email,
+                        is_active: true
+                    });
+                    // Clean up pending invite
+                    await db.from('app_settings')
+                        .delete()
+                        .eq('key', pendingKey);
+                    // Redirect to dashboard
+                    window.location.href = 'gradely-admin.html';
+                    return;
+                }
+            }
+
             if (!admin || !admin.is_active) {
                 await db.auth.signOut();
                 const errorArea = document.getElementById('login-error');
@@ -252,7 +352,130 @@
             window.location.href = 'gradely-admin.html';
         }
 
+        function checkForRecoveryToken() {
+            const hash = window.location.hash;
+            if (!hash) return false;
+            
+            // Parse the hash fragment
+            const params = {};
+            hash.substring(1).split('&').forEach(part => {
+                const [key, val] = part.split('=');
+                params[key] = decodeURIComponent(val || '');
+            });
+            
+            if (params.type === 'recovery' && params.access_token) {
+                // Set the session from the recovery token
+                // Supabase auto-detects hash tokens on load
+                // Just show the recovery form
+                showRecoveryForm();
+                return true;
+            }
+            return false;
+        }
+
+        function showRecoveryForm() {
+            document.getElementById('login-form').style.display = 'none';
+            document.querySelector('.login-step').style.display = 'none';
+            document.getElementById('recovery-form').style.display = 'block';
+        }
+
+        function toggleRecoveryPass() {
+            const input = document.getElementById('recovery-password');
+            const confirmInput = document.getElementById('recovery-confirm');
+            const type = input.type === 'password' ? 'text' : 'password';
+            input.type = type;
+            confirmInput.type = type;
+        }
+
+        function checkRecoveryStrength(pass) {
+            const bar = document.getElementById('recovery-strength-bar');
+            const text = document.getElementById('recovery-strength-text');
+            
+            if (!pass) {
+                bar.style.width = '0';
+                text.textContent = '';
+                return;
+            }
+            
+            let score = 0;
+            if (pass.length >= 8) score++;
+            if (/[A-Z]/.test(pass)) score++;
+            if (/[0-9]/.test(pass)) score++;
+            if (/[^a-zA-Z0-9]/.test(pass)) score++;
+            
+            if (score <= 1) {
+                bar.style.width = '33%';
+                bar.style.background = '#ef4444';
+                text.textContent = 'Weak';
+                text.style.color = '#ef4444';
+            } else if (score === 2 || score === 3) {
+                bar.style.width = '66%';
+                bar.style.background = '#f5a623';
+                text.textContent = 'Good';
+                text.style.color = '#f5a623';
+            } else {
+                bar.style.width = '100%';
+                bar.style.background = '#22c55e';
+                text.textContent = 'Strong';
+                text.style.color = '#22c55e';
+            }
+        }
+
+        async function confirmRecoveryPassword() {
+            const pass = document.getElementById('recovery-password').value;
+            const confirm = document.getElementById('recovery-confirm').value;
+            const btn = document.getElementById('recovery-btn');
+            const errorArea = document.getElementById('recovery-error');
+            
+            errorArea.style.display = 'none';
+            
+            if (pass.length < 8) {
+                errorArea.textContent = "Password must be at least 8 characters.";
+                errorArea.style.display = 'block';
+                return;
+            }
+            
+            if (pass !== confirm) {
+                errorArea.textContent = "Passwords do not match.";
+                errorArea.style.display = 'block';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Updating...';
+            
+            try {
+                const { error } = await db.auth.updateUser({
+                    password: pass
+                });
+                
+                if (error) throw error;
+                
+                // Show success and redirect
+                document.getElementById('recovery-form').innerHTML = `
+                    <div style="text-align:center; padding:20px 0;">
+                        <div style="font-size:3rem; margin-bottom:16px;">✅</div>
+                        <h3 style="font-size:1.2rem; margin-bottom:8px;">Password Updated!</h3>
+                        <p style="color:#64748b; font-size:0.9rem;">Redirecting to login...</p>
+                    </div>
+                `;
+                
+                setTimeout(() => {
+                    window.location.hash = '';
+                    window.location.reload();
+                }, 2000);
+                
+            } catch (err) {
+                errorArea.textContent = "Error updating password: " + err.message;
+                errorArea.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = 'Update Password';
+            }
+        }
+
         async function initAuth() {
+            if (checkForRecoveryToken()) return;
+            
             const { data: { session } } = await db.auth.getSession();
             if (session) {
                 await checkAdminUser(session.user.id);

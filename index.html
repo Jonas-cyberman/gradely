@@ -399,6 +399,16 @@
             display: block;
         }
 
+        @keyframes slideDown {
+            from { transform: translateY(-100%); }
+            to { transform: translateY(0); }
+        }
+
+        @keyframes bannerSlideUp {
+            from { transform: translateY(0); }
+            to { transform: translateY(-100%); }
+        }
+
         @keyframes slideUp {
             from {
                 opacity: 0;
@@ -456,6 +466,25 @@
             background: transparent;
             border: 2px solid var(--border);
             color: var(--text);
+        }
+
+        .year-tab {
+            width: auto !important;
+            padding: 10px 20px !important;
+            border-radius: 100px !important;
+            font-size: 0.85rem !important;
+            border: 2px solid var(--border) !important;
+            background: #fff !important;
+            color: var(--text-main) !important;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        }
+
+        .year-tab.active {
+            background: var(--primary) !important;
+            color: #fff !important;
+            border-color: var(--primary) !important;
+            box-shadow: 0 4px 12px rgba(30, 58, 95, 0.2) !important;
+            transform: translateY(-1px);
         }
 
         /* ─── ERROR STATE ─── */
@@ -983,6 +1012,47 @@
 </head>
 
 <body>
+
+    <div id="update-banner" style="
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        background: #1e3a5f;
+        color: white;
+        padding: 14px 20px;
+        z-index: 99999;
+        cursor: pointer;
+        text-align: center;
+        animation: slideDown 0.3s ease;
+    " onclick="applyLiveUpdate()">
+        <div style="display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            gap: 10px;">
+            <span style="font-size: 1rem;">🔄</span>
+            <div>
+                <div style="font-weight: 800; 
+                    font-size: 0.85rem;" 
+                    id="update-banner-title">
+                    Update Available
+                </div>
+                <div style="font-size: 0.72rem; 
+                    opacity: 0.85;"
+                    id="update-banner-msg">
+                    Tap to refresh app content
+                </div>
+            </div>
+            <span style="font-size: 0.75rem; 
+                background: #f5a623; 
+                color: white; 
+                padding: 4px 10px; 
+                border-radius: 100px; 
+                font-weight: 700; 
+                margin-left: 8px;">
+                TAP TO UPDATE
+            </span>
+        </div>
+    </div>
 
     <!-- ─── SPLASH SCREEN ─── -->
     <div id="splash">
@@ -1531,6 +1601,7 @@
         // ─── STATE ───
         let USER = safeJsonParse(localStorage.getItem('Gradely_profile') || localStorage.getItem('Gradely_user') || 'null', null);
         let GRADES = safeJsonParse(localStorage.getItem('Gradely_grades') || '{}', {});
+        let RESIT_GRADES = safeJsonParse(localStorage.getItem('Gradely_resits') || '{}', {});
         let SELECTED_YEAR = null;
         let gpaChart = null; // Single global declaration
         let presenceChannel = null;
@@ -1785,6 +1856,9 @@
 
                     // Version & Tutorial
                     checkVersionAndTutorial();
+
+                    // Start listening for admin updates
+                    initRealtimeUpdates();
                 } else {
                     document.getElementById('main-ui').style.display = 'none';
                     showOnboarding();
@@ -1794,6 +1868,135 @@
                 document.getElementById('error-state').style.display = 'flex';
             } finally {
                 document.getElementById('loader').style.display = 'none';
+            }
+        }
+
+        // ─── REALTIME UPDATES ───
+        let LAST_KNOWN_UPDATE = null;
+
+        function initRealtimeUpdates() {
+            if (!window.db) return;
+
+            // Store the current update timestamp
+            // so we don't alert on first load
+            const currentUpdate = window.APP?.settings?.last_update;
+            if (currentUpdate) {
+                try {
+                    const parsed = JSON.parse(currentUpdate);
+                    LAST_KNOWN_UPDATE = parsed.timestamp;
+                } catch(e) {
+                    LAST_KNOWN_UPDATE = Date.now();
+                }
+            } else {
+                LAST_KNOWN_UPDATE = Date.now();
+            }
+
+            // Subscribe to changes on app_settings
+            db.channel('app-updates')
+                .on(
+                    'postgres_changes',
+                    {
+                        event: 'UPDATE',
+                        schema: 'public',
+                        table: 'app_settings',
+                        filter: 'key=eq.last_update'
+                    },
+                    (payload) => {
+                        try {
+                            const newData = JSON.parse(payload.new.value);
+                            if (newData.timestamp > LAST_KNOWN_UPDATE) {
+                                showUpdateBanner(newData);
+                            }
+                        } catch(e) {
+                            console.warn('Update parse error:', e);
+                        }
+                    }
+                )
+                .subscribe();
+        }
+
+        function showUpdateBanner(updateData) {
+            const banner = document.getElementById('update-banner');
+            const title = document.getElementById('update-banner-title');
+            const msg = document.getElementById('update-banner-msg');
+            if (!banner) return;
+
+            if (title) title.textContent = 'Update Available';
+            if (msg) msg.textContent = updateData.message || 'Tap to refresh app content';
+
+            banner.style.display = 'block';
+            window.PENDING_UPDATE = updateData;
+
+            // Collapse after 10s if not tapped
+            setTimeout(() => {
+                if (banner.style.display !== 'none') {
+                    banner.style.padding = '8px 20px';
+                    const tap = banner.querySelector('span:last-child');
+                    if (tap) tap.style.display = 'none';
+                }
+            }, 10000);
+        }
+
+        async function applyLiveUpdate() {
+            const banner = document.getElementById('update-banner');
+            if (banner) {
+                banner.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; gap:10px;">
+                    <span style="font-size:1rem;">⏳</span>
+                    <div style="font-weight:800; font-size:0.85rem;">Refreshing...</div>
+                </div>`;
+            }
+
+            try {
+                await loadAppData();
+                applyConfigs();
+
+                if (window.PENDING_UPDATE) {
+                    LAST_KNOWN_UPDATE = window.PENDING_UPDATE.timestamp;
+                }
+
+                // Re-render current tab
+                const activeTab = document.querySelector('.tab-content.active');
+                if (activeTab) {
+                    const tabId = activeTab.id.replace('tab-', '');
+                    if (tabId === 'calc') renderCalculator();
+                    if (tabId === 'cumul') renderCumulative();
+                    if (tabId === 'proj') renderProjection();
+                    if (tabId === 'profile') populateProfileUI();
+                }
+
+                if (banner) {
+                    banner.style.background = '#22c55e';
+                    banner.innerHTML = `<div style="font-weight:800; font-size:0.85rem; text-align:center;">
+                        ✅ App updated successfully
+                    </div>`;
+                    setTimeout(() => {
+                        banner.style.animation = 'bannerSlideUp 0.3s ease forwards';
+                        setTimeout(() => {
+                            banner.style.display = 'none';
+                            banner.style.animation = '';
+                            banner.style.background = '#1e3a5f';
+                            banner.style.padding = '14px 20px';
+                            // Restore original inner HTML for next use
+                            banner.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; gap:10px;">
+                                <span style="font-size:1rem;">🔄</span>
+                                <div>
+                                    <div style="font-weight:800; font-size:0.85rem;" id="update-banner-title">Update Available</div>
+                                    <div style="font-size:0.72rem; opacity:0.85;" id="update-banner-msg">Tap to refresh app content</div>
+                                </div>
+                                <span style="font-size:0.75rem; background:#f5a623; color:white; padding:4px 10px; border-radius:100px; font-weight:700; margin-left:8px;">TAP TO UPDATE</span>
+                            </div>`;
+                        }, 300);
+                    }, 2000);
+                }
+            } catch (err) {
+                if (banner) {
+                    banner.style.background = '#ef4444';
+                    banner.innerHTML = `<div style="font-weight:800; font-size:0.85rem; text-align:center;">❌ Update failed. Try again.</div>`;
+                    setTimeout(() => {
+                        banner.style.display = 'none';
+                        banner.style.background = '#1e3a5f';
+                    }, 3000);
+                }
             }
         }
 
@@ -1831,8 +2034,25 @@
             document.getElementById('setting-version').textContent = window.APP.settings.app_version || '2.0.0';
 
             if (USER) {
+                updateProgBadge();
                 populateProfileUI();
                 renderCalculator();
+            }
+        }
+
+        function updateProgBadge() {
+            const badge = document.getElementById('prog-badge');
+            if (!badge || !USER) return;
+
+            const prog = window.APP.programmes.find(p => p.id === USER.programmeId);
+
+            if (prog) {
+                badge.textContent = prog.code;
+                // Show live/coming_soon status color
+                badge.className = 'status-badge ' +
+                    (prog.status === 'live'
+                        ? 'status-live'
+                        : 'status-soon');
             }
         }
 
@@ -1874,6 +2094,7 @@
 
             USER = { nickname: nick, programmeId: tempProgId };
             localStorage.setItem('Gradely_profile', JSON.stringify(USER));
+            updateProgBadge();
             document.getElementById('onboarding').style.display = 'none';
 
             // Show main UI and nav (these are hidden until a user profile exists)
@@ -1971,8 +2192,7 @@
             if (!SELECTED_YEAR && progYears.length) SELECTED_YEAR = progYears[0].id;
 
             tabs.innerHTML = progYears.map(y => `
-                <button class="btn btn-outline ${SELECTED_YEAR === y.id ? 'btn-primary' : ''}" 
-                        style="width: auto; font-size: 0.8rem; padding: 8px 16px; flex-shrink: 0; position: relative;"
+                <button class="year-tab ${SELECTED_YEAR === y.id ? 'active' : ''}" 
                         onclick="setYear('${y.id}')">
                     ${y.label}
                     ${y.is_locked ? '<span style="font-size: 0.6rem; margin-left: 4px;">🔒</span>' : ''}
@@ -2017,23 +2237,185 @@
             return `
                 <div style="margin-top: 24px;">
                     <div style="margin-bottom: 12px;">
-                        <p style="font-weight: 800; font-size: 0.8rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 1px;">${title}</p>
+                        <p style="font-weight: 800; 
+                            font-size: 0.8rem; 
+                            text-transform: uppercase; 
+                            color: var(--text-secondary); 
+                            letter-spacing: 1px;">
+                            ${title}
+                        </p>
                     </div>
-                    ${courses.map(c => `
-                        <div class="card" style="padding: 16px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
-                            <div style="flex: 1;">
-                                <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;">${c.name}</h4>
-                                <p style="font-size: 0.7rem; color: var(--text-secondary); font-weight: 600;">${c.code} • ${c.credits} Credits</p>
+                    ${courses.map(c => {
+                        const hasResit = !!RESIT_GRADES[c.id];
+                        const origGrade = GRADES[c.id];
+                        const resitGrade = RESIT_GRADES[c.id];
+                        
+                        let effText = '';
+                        if (origGrade && resitGrade) {
+                            const orig = window.APP.gradeScale
+                                .find(g => g.grade === origGrade);
+                            const resit = window.APP.gradeScale
+                                .find(g => g.grade === resitGrade);
+                            if (orig && resit) {
+                                const avg = (
+                                    (orig.points + resit.points) / 2
+                                ).toFixed(2);
+                                effText = 'Effective: ' + avg + ' pts';
+                            }
+                        }
+                        
+                        return `
+                        <div class="card" style="padding: 16px; 
+                            margin-bottom: 12px;">
+                            
+                            <!-- MAIN GRADE ROW -->
+                            <div style="display: flex; 
+                                align-items: center; 
+                                justify-content: space-between;">
+                                <div style="flex: 1;">
+                                    <h4 style="font-size: 0.9rem; 
+                                        font-weight: 700; 
+                                        margin-bottom: 2px;">
+                                        ${c.name}
+                                    </h4>
+                                    <p style="font-size: 0.7rem; 
+                                        color: var(--text-secondary); 
+                                        font-weight: 600;">
+                                        ${c.code} • ${c.credits} Credits
+                                    </p>
+                                    ${effText ? `
+                                    <p id="eff-${c.id}" 
+                                        style="font-size: 0.72rem; 
+                                        font-weight: 700; 
+                                        color: var(--accent); 
+                                        margin-top: 4px;">
+                                        ${effText}
+                                    </p>` : `
+                                    <p id="eff-${c.id}" 
+                                        style="font-size: 0.72rem; 
+                                        font-weight: 700; 
+                                        color: var(--accent); 
+                                        margin-top: 4px;">
+                                    </p>`}
+                                </div>
+                                <div style="display: flex; 
+                                    flex-direction: column; 
+                                    align-items: flex-end; 
+                                    gap: 6px;">
+                                    <select 
+                                        onchange="updateGrade(
+                                            '${c.id}', this.value)" 
+                                        style="background: var(--input-bg); 
+                                            color: var(--text); 
+                                            border: 1px solid var(--border); 
+                                            padding: 8px 12px; 
+                                            border-radius: 8px; 
+                                            font-weight: 800; 
+                                            font-family: inherit; 
+                                            cursor: pointer;">
+                                        <option value="">—</option>
+                                        ${window.APP.gradeScale.map(g => 
+                                            `<option value="${g.grade}" 
+                                                ${GRADES[c.id] === g.grade 
+                                                    ? 'selected' : ''}>
+                                                ${g.grade}
+                                            </option>`
+                                        ).join('')}
+                                    </select>
+                                    ${!c.is_non_graded ? `
+                                    <button 
+                                        id="resit-btn-${c.id}"
+                                        onclick="toggleResit('${c.id}')"
+                                        style="font-size: 0.65rem; 
+                                            font-weight: 700; 
+                                            color: ${hasResit 
+                                                ? '#ef4444' 
+                                                : 'var(--accent)'}; 
+                                            background: none; 
+                                            border: none; 
+                                            cursor: pointer; 
+                                            padding: 0; 
+                                            font-family: inherit;
+                                            display: ${(GRADES[c.id] === 'D' || 
+                                                GRADES[c.id] === 'F' || hasResit) 
+                                                ? 'block' : 'none'};">
+                                        ${hasResit 
+                                            ? '✕ Remove Resit' 
+                                            : '+ Add Resit'}
+                                    </button>` : ''}
+                                </div>
                             </div>
-                            <select onchange="updateGrade('${c.id}', this.value)" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; font-weight: 800; font-family: inherit; cursor: pointer;">
-                                <option value="">—</option>
-                                ${window.APP.gradeScale.map(g => `<option value="${g.grade}" ${GRADES[c.id] === g.grade ? 'selected' : ''}>${g.grade}</option>`).join('')}
-                            </select>
+                            
+                            <!-- RESIT ROW -->
+                            ${!c.is_non_graded ? `
+                            <div id="resit-row-${c.id}" 
+                                style="display: ${hasResit 
+                                    ? 'flex' : 'none'}; 
+                                align-items: center; 
+                                justify-content: space-between; 
+                                margin-top: 12px; 
+                                padding-top: 12px; 
+                                border-top: 1px dashed var(--border);">
+                                <div>
+                                    <p style="font-size: 0.78rem; 
+                                        font-weight: 700; 
+                                        color: var(--accent);">
+                                        🔁 Resit Grade
+                                    </p>
+                                    <p style="font-size: 0.68rem; 
+                                        color: var(--text-secondary); 
+                                        margin-top: 2px;">
+                                        Avg of both attempts used
+                                    </p>
+                                </div>
+                                <select 
+                                    id="resit-sel-${c.id}"
+                                    onchange="updateResit(
+                                        '${c.id}', this.value)"
+                                    style="background: var(--input-bg); 
+                                        color: var(--accent); 
+                                        border: 1px solid var(--accent); 
+                                        padding: 8px 12px; 
+                                        border-radius: 8px; 
+                                        font-weight: 800; 
+                                        font-family: inherit; 
+                                        cursor: pointer;">
+                                    <option value="">—</option>
+                                    ${window.APP.gradeScale.map(g => 
+                                        `<option value="${g.grade}" 
+                                            ${RESIT_GRADES[c.id] === g.grade 
+                                                ? 'selected' : ''}>
+                                            ${g.grade}
+                                        </option>`
+                                    ).join('')}
+                                </select>
+                            </div>` : ''}
+                            
                         </div>
-                    `).join('')}
-                    <div style="display: flex; gap: 8px; margin-top: 8px;">
-                        <button class="btn btn-outline" style="flex: 1; padding: 10px; font-size: 0.8rem; border-radius: 100px; color: var(--text-secondary);" onclick="revertSemester('${title}', '${SELECTED_YEAR}', ${semNum})">Revert & Clear</button>
-                        <button class="btn btn-primary" style="flex: 2; padding: 10px; font-size: 0.85rem; border-radius: 100px;" onclick="saveSemester('${SELECTED_YEAR}', ${semNum})">Save ${title}</button>
+                    `}).join('')}
+                    
+                    <div style="display: flex; 
+                        gap: 8px; margin-top: 8px;">
+                        <button class="btn btn-outline" 
+                            style="flex: 1; padding: 10px; 
+                                font-size: 0.8rem; 
+                                border-radius: 100px; 
+                                color: var(--text-secondary);" 
+                            onclick="revertSemester(
+                                '${title}', 
+                                '${SELECTED_YEAR}', 
+                                ${semNum})">
+                            Revert & Clear
+                        </button>
+                        <button class="btn btn-primary" 
+                            style="flex: 2; padding: 10px; 
+                                font-size: 0.85rem; 
+                                border-radius: 100px;" 
+                            onclick="saveSemester(
+                                '${SELECTED_YEAR}', 
+                                ${semNum})">
+                            Save ${title}
+                        </button>
                     </div>
                 </div>
             `;
@@ -2048,16 +2430,33 @@
             let missingGrades = false;
 
             yearCourses.forEach(c => {
+                if (c.is_non_graded) return;
+                
                 const grade = GRADES[c.id];
                 if (!grade) {
-                    if (!c.is_non_graded) missingGrades = true;
+                    missingGrades = true;
                     return;
                 }
-                const scale = window.APP.gradeScale.find(g => g.grade === grade);
-                if (scale && !c.is_non_graded) {
-                    semPoints += (scale.points * c.credits);
-                    semCredits += c.credits;
-                }
+                
+                const scale = window.APP.gradeScale
+                    .find(g => g.grade === grade);
+                if (!scale) return;
+                
+                // Check for resit grade
+                const resitGrade = RESIT_GRADES[c.id];
+                const resitScale = resitGrade 
+                    ? window.APP.gradeScale.find(
+                        g => g.grade === resitGrade)
+                    : null;
+                
+                // Use average if resit exists, 
+                // otherwise use original
+                const effectivePoints = resitScale
+                    ? (scale.points + resitScale.points) / 2
+                    : scale.points;
+                
+                semPoints += (effectivePoints * c.credits);
+                semCredits += c.credits;
             });
 
             if (missingGrades) {
@@ -2098,6 +2497,64 @@
         function updateGrade(courseId, grade) {
             GRADES[courseId] = grade;
             localStorage.setItem('Gradely_grades', JSON.stringify(GRADES));
+            
+            // Show or hide resit option based on grade
+            const failGrades = ['D', 'F'];
+            const resitBtn = document.getElementById('resit-btn-' + courseId);
+            const resitRow = document.getElementById('resit-row-' + courseId);
+            
+            if (resitBtn) {
+                if (failGrades.includes(grade)) {
+                    resitBtn.style.display = 'block';
+                } else {
+                    // Hide resit and clear any saved resit
+                    resitBtn.style.display = 'none';
+                    if (resitRow) resitRow.style.display = 'none';
+                    delete RESIT_GRADES[courseId];
+                    localStorage.setItem('Gradely_resits', JSON.stringify(RESIT_GRADES));
+                    const effEl = document.getElementById('eff-' + courseId);
+                    if (effEl) effEl.textContent = '';
+                }
+            }
+        }
+
+        function updateResit(courseId, grade) {
+            if (grade) {
+                RESIT_GRADES[courseId] = grade;
+            } else {
+                delete RESIT_GRADES[courseId];
+            }
+            localStorage.setItem('Gradely_resits', JSON.stringify(RESIT_GRADES));
+            // Update the effective grade display
+            const effEl = document.getElementById('eff-' + courseId);
+            if (effEl) {
+                const orig = window.APP.gradeScale.find(g => g.grade === GRADES[courseId]);
+                const resit = window.APP.gradeScale.find(g => g.grade === grade);
+                if (orig && resit) {
+                    const avg = ((orig.points + resit.points) / 2).toFixed(2);
+                    effEl.textContent = 'Effective: ' + avg + ' pts';
+                    effEl.style.color = 'var(--accent)';
+                } else {
+                    effEl.textContent = '';
+                }
+            }
+        }
+
+        function toggleResit(courseId) {
+            const row = document.getElementById('resit-row-' + courseId);
+            if (!row) return;
+            const isShown = row.style.display !== 'none';
+            row.style.display = isShown ? 'none' : 'flex';
+            if (isShown) {
+                // Removing resit — clear it
+                delete RESIT_GRADES[courseId];
+                localStorage.setItem('Gradely_resits', JSON.stringify(RESIT_GRADES));
+                const effEl = document.getElementById('eff-' + courseId);
+                if (effEl) effEl.textContent = '';
+                // Reset the resit select
+                const sel = document.getElementById('resit-sel-' + courseId);
+                if (sel) sel.value = '';
+            }
         }
 
         function revertSemester(title, yearId, semNum) {
@@ -2109,6 +2566,11 @@
                 delete GRADES[c.id];
             });
             localStorage.setItem('Gradely_grades', JSON.stringify(GRADES));
+
+            yearCourses.forEach(c => {
+                delete RESIT_GRADES[c.id];
+            });
+            localStorage.setItem('Gradely_resits', JSON.stringify(RESIT_GRADES));
 
             // 2. Remove from saved results if it exists
             let results = [];
@@ -2190,6 +2652,12 @@
                         </div>
                         <div style="text-align: right;">
                             <p style="font-weight: 800; color: var(--primary);">${parseFloat(r.gpa).toFixed(2)}</p>
+                            ${Object.keys(RESIT_GRADES).some(id => {
+                                const course = window.APP.courses
+                                    .find(c => c.id === id);
+                                return course && course.year_id === r.yearId 
+                                    && course.semester === r.semester;
+                            }) ? '<span style="font-size:0.65rem; background: var(--accent); color: white; padding: 2px 6px; border-radius: 4px; font-weight: 700; margin-left: 6px;">RESIT</span>' : ''}
                         </div>
                     </div>
                 `).join('');
@@ -2323,8 +2791,7 @@
             }
 
             selector.innerHTML = progYears.map(y => `
-                <button class="btn btn-outline ${PROJ_YEAR_ID === y.id ? 'btn-primary' : ''}" 
-                        style="width: auto; font-size: 0.8rem; padding: 8px 16px; flex-shrink: 0;"
+                <button class="year-tab ${PROJ_YEAR_ID === y.id ? 'active' : ''}" 
                         onclick="setProjYear('${y.id}')">
                     ${y.label}
                 </button>
@@ -2730,9 +3197,13 @@
 
             const appUrl = window.APP.settings.app_url || 'https://YOUR-NEW-VERCEL-URL.vercel.app';
 
+            const progName = window.APP.programmes.find(
+                p => p.id === USER.programmeId
+            )?.name || 'General Nursing';
+
             const message = encodeURIComponent(
                 `🎓 My Gradely Score: ${cgpa} — ${classLabel}\n` +
-                `📚 DNMTC | General Nursing (RGN)\n` +
+                `📚 DNMTC | ${progName}\n` +
                 `Calculate yours 👉 ${appUrl}`
             );
 
@@ -3029,6 +3500,10 @@
             });
 
             const currentProg = window.APP.programmes.find(p => p.id === USER.programmeId);
+            
+            if (document.getElementById('print-programme')) {
+                document.getElementById('print-programme').textContent = currentProg?.name || 'General Nursing (RGN)';
+            }
 
             // Group by Year
             const yearGroups = {};
