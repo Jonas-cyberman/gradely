@@ -3502,6 +3502,7 @@
                 await db.from('app_settings').update({ value: val }).eq('id', id);
                 showToast(`${key} updated ✓`);
                 await refreshData();
+                await broadcastUpdate('content');
             }
 
             async function openGradeEdit(id = null) {
@@ -3581,6 +3582,7 @@
                     setLoading(true);
                     await db.from('grade_scale').delete().eq('id', id);
                     await refreshData();
+                    await broadcastUpdate('grade_scale');
                 }
             }
 
